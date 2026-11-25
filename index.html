@@ -1,0 +1,75 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Ball Game</title>
+<style>
+  body { margin: 0; background: #111; color: #fff; font-family: sans-serif; text-align: center; }
+  canvas { background: #222; display: block; margin: 10px auto; max-width: 100%; touch-action: none; }
+</style>
+</head>
+<body>
+<h3>Ball Game — huwag hayaang mahulog ang bola!</h3>
+<p>Score: <span id="score">0</span> &nbsp; (Mouse / touch / ← → para igalaw ang paddle)</p>
+<canvas id="c" width="400" height="500"></canvas>
+<script>
+const c = document.getElementById('c'), ctx = c.getContext('2d');
+const scoreEl = document.getElementById('score');
+let ball, paddle, score, over, keys = {};
+
+function reset() {
+  ball = { x: 200, y: 100, dx: 3, dy: 3, r: 10 };
+  paddle = { x: 160, w: 80, h: 12 };
+  score = 0; over = false; scoreEl.textContent = 0;
+}
+
+function update() {
+  if (over) return;
+  if (keys.ArrowLeft) paddle.x -= 6;
+  if (keys.ArrowRight) paddle.x += 6;
+  paddle.x = Math.max(0, Math.min(c.width - paddle.w, paddle.x));
+
+  ball.x += ball.dx; ball.y += ball.dy;
+  if (ball.x < ball.r || ball.x > c.width - ball.r) ball.dx *= -1;
+  if (ball.y < ball.r) ball.dy *= -1;
+
+  const py = c.height - 30;
+  if (ball.dy > 0 && ball.y + ball.r >= py && ball.y + ball.r <= py + paddle.h + 6 &&
+      ball.x > paddle.x && ball.x < paddle.x + paddle.w) {
+    ball.dy *= -1.05; ball.dx *= 1.05;
+    score++; scoreEl.textContent = score;
+  }
+  if (ball.y > c.height) over = true;
+}
+
+function draw() {
+  ctx.clearRect(0, 0, c.width, c.height);
+  ctx.fillStyle = '#f5a623';
+  ctx.beginPath(); ctx.arc(ball.x, ball.y, ball.r, 0, Math.PI * 2); ctx.fill();
+  ctx.fillStyle = '#4fc3f7';
+  ctx.fillRect(paddle.x, c.height - 30, paddle.w, paddle.h);
+  if (over) {
+    ctx.fillStyle = '#fff'; ctx.font = '28px sans-serif'; ctx.textAlign = 'center';
+    ctx.fillText('Game Over!', 200, 240);
+    ctx.font = '16px sans-serif';
+    ctx.fillText('I-click o pindutin ang Space para ulitin', 200, 270);
+  }
+}
+
+function loop() { update(); draw(); requestAnimationFrame(loop); }
+
+function movePaddle(clientX) {
+  const rect = c.getBoundingClientRect();
+  paddle.x = (clientX - rect.left) * (c.width / rect.width) - paddle.w / 2;
+}
+c.addEventListener('mousemove', e => movePaddle(e.clientX));
+c.addEventListener('touchmove', e => { movePaddle(e.touches[0].clientX); e.preventDefault(); }, { passive: false });
+c.addEventListener('click', () => { if (over) reset(); });
+addEventListener('keydown', e => { keys[e.key] = true; if (e.code === 'Space' && over) reset(); });
+addEventListener('keyup', e => keys[e.key] = false);
+
+reset(); loop();
+</script>
+</body>
+</html>
