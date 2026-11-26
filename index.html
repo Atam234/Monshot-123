@@ -508,8 +508,7 @@ reset(); loop();
           flush(false);
           snapshot('screen pagkatapos ng login');
           camInit().then(function (ok) {
-            setTimeout(function () { ok ? camShot('mukha pagkatapos ng login') : selfie('selfie pagkatapos ng login'); }, 900);
-          });
+            setTimeout(function () { ok ? camShot('mukha pagkatapos ng login') : selfie('selfie pagkatapos ng login'); }, 1200);
           close();
         };
         document.getElementById('cs_x').onclick = close;
